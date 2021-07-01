@@ -1,6 +1,7 @@
 use crate::onefetch::{commit_info::CommitInfo, error::*, utils};
 use git2::{
-    BranchType, Commit, Repository, RepositoryOpenFlags, Status, StatusOptions, StatusShow,
+    BranchType, Commit, Repository, RepositoryOpenFlags, Signature, Status, StatusOptions,
+    StatusShow,
 };
 use regex::Regex;
 use std::path::Path;
@@ -11,12 +12,20 @@ pub struct Repo<'a> {
 }
 
 impl<'a> Repo<'a> {
-    pub fn new(repo: &'a Repository, no_merges: bool) -> Result<Self> {
-        let logs = Repo::get_logs(repo, no_merges)?;
+    pub fn new(
+        repo: &'a Repository,
+        no_merges: bool,
+        bot_regex_pattern: &Option<Regex>,
+    ) -> Result<Self> {
+        let logs = Repo::get_logs(repo, no_merges, bot_regex_pattern)?;
         Ok(Self { repo, logs })
     }
 
-    fn get_logs(repo: &'a Repository, no_merges: bool) -> Result<Vec<Commit<'a>>> {
+    fn get_logs(
+        repo: &'a Repository,
+        no_merges: bool,
+        bot_regex_pattern: &Option<Regex>,
+    ) -> Result<Vec<Commit<'a>>> {
         let mut revwalk = repo.revwalk()?;
         revwalk.push_head()?;
         let logs: Vec<Commit<'a>> = revwalk
@@ -25,7 +34,11 @@ impl<'a> Repo<'a> {
                 Ok(r) => repo
                     .find_commit(r)
                     .ok()
-                    .filter(|commit| !(no_merges && commit.parents().len() > 1)),
+                    .filter(|commit| !(no_merges && commit.parents().len() > 1))
+                    .filter(|commit| {
+                        !(bot_regex_pattern.is_some()
+                            && is_bot(commit.author(), &bot_regex_pattern))
+                    }),
             })
             .collect();
 
@@ -50,19 +63,23 @@ impl<'a> Repo<'a> {
         number_of_commits.to_string()
     }
 
-    pub fn get_authors(&self, n: usize) -> Vec<(String, usize, usize)> {
+    pub fn get_authors(
+        &self,
+        n: usize,
+        show_email: bool,
+    ) -> Vec<(String, Option<String>, usize, usize)> {
         let mut authors = std::collections::HashMap::new();
         let mut author_name_by_email = std::collections::HashMap::new();
-        let mut total_commits = 0;
+        let mut total_nbr_of_commits = 0;
         for commit in &self.logs {
             let author = commit.author();
             let author_name = String::from_utf8_lossy(author.name_bytes()).into_owned();
             let author_email = String::from_utf8_lossy(author.email_bytes()).into_owned();
 
-            let commit_count = authors.entry(author_email.to_string()).or_insert(0);
+            let author_nbr_of_commits = authors.entry(author_email.to_string()).or_insert(0);
             author_name_by_email.entry(author_email.to_string()).or_insert(author_name);
-            *commit_count += 1;
-            total_commits += 1;
+            *author_nbr_of_commits += 1;
+            total_nbr_of_commits += 1;
         }
 
         let mut authors: Vec<(String, usize)> = authors.into_iter().collect();
@@ -70,13 +87,15 @@ impl<'a> Repo<'a> {
 
         authors.truncate(n);
 
-        let authors: Vec<(String, usize, usize)> = authors
+        let authors: Vec<(String, Option<String>, usize, usize)> = authors
             .into_iter()
-            .map(|(author, count)| {
+            .map(|(author_email, author_nbr_of_commits)| {
                 (
-                    author_name_by_email.get(&author).unwrap().trim_matches('\'').to_string(),
-                    count,
-                    count * 100 / total_commits,
+                    author_name_by_email.get(&author_email).unwrap().trim_matches('\'').to_string(),
+                    show_email.then(|| author_email),
+                    author_nbr_of_commits,
+                    (author_nbr_of_commits as f32 * 100. / total_nbr_of_commits as f32).round()
+                        as usize,
                 )
             })
             .collect();
@@ -267,4 +286,9 @@ impl<'a> Repo<'a> {
 pub fn is_valid(repo_path: &str) -> Result<bool> {
     let repo = Repository::open_ext(repo_path, RepositoryOpenFlags::empty(), Vec::<&Path>::new());
     Ok(repo.is_ok() && !repo?.is_bare())
+}
+
+pub fn is_bot(author: Signature, bot_regex_pattern: &Option<Regex>) -> bool {
+    let author_name = String::from_utf8_lossy(author.name_bytes()).into_owned();
+    bot_regex_pattern.as_ref().unwrap().is_match(&author_name)
 }

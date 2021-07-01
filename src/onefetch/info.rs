@@ -21,7 +21,7 @@ pub struct Info {
     creation_date: String,
     languages: Vec<(Language, f64)>,
     dependencies: String,
-    authors: Vec<(String, usize, usize)>,
+    authors: Vec<(String, Option<String>, usize, usize)>,
     last_change: String,
     repo_url: String,
     number_of_commits: String,
@@ -211,7 +211,7 @@ impl Info {
     pub fn new(config: Cli) -> Result<Info> {
         let git_version = cli_utils::get_git_version();
         let repo = Repository::discover(&config.repo_path)?;
-        let internal_repo = Repo::new(&repo, config.no_merges)?;
+        let internal_repo = Repo::new(&repo, config.no_merges, &config.bot_regex_pattern)?;
         let (repo_name, repo_url) = internal_repo.get_name_and_url()?;
         let head_refs = internal_repo.get_head_refs()?;
         let pending_changes = internal_repo.get_pending_changes()?;
@@ -221,7 +221,7 @@ impl Info {
         let number_of_branches = internal_repo.get_number_of_branches()?;
         let creation_date = internal_repo.get_creation_date(config.iso_time)?;
         let number_of_commits = internal_repo.get_number_of_commits();
-        let authors = internal_repo.get_authors(config.number_of_authors);
+        let authors = internal_repo.get_authors(config.number_of_authors, config.show_email);
         let last_change = internal_repo.get_date_of_last_commit(config.iso_time);
         let (repo_size, file_count) = internal_repo.get_repo_size();
         let workdir = internal_repo.get_work_dir()?;
@@ -255,8 +255,8 @@ impl Info {
             repo_url,
             number_of_commits,
             lines_of_code,
-            repo_size,
             file_count,
+            repo_size,
             license,
             dominant_language,
             ascii_colors,
@@ -312,15 +312,21 @@ impl Info {
 
         let pad = title.len() + 2;
 
-        for (i, (author_name, author_nbr_commits, autor_contribution)) in
+        for (i, (author_name, author_email_opt, author_nbr_commits, autor_contribution)) in
             self.authors.iter().enumerate()
         {
+            let author = if let Some(author_email) = author_email_opt {
+                format!("{} <{}>", author_name, author_email)
+            } else {
+                author_name.to_owned()
+            };
+
             if i == 0 {
                 author_field.push_str(&format!(
                     "{}{} {} {}\n",
                     autor_contribution.to_string().color(self.text_colors.info),
                     "%".color(self.text_colors.info),
-                    author_name.to_string().color(self.text_colors.info),
+                    author.to_string().color(self.text_colors.info),
                     author_nbr_commits.to_string().color(self.text_colors.info),
                 ));
             } else {
@@ -329,7 +335,7 @@ impl Info {
                     "",
                     autor_contribution.to_string().color(self.text_colors.info),
                     "%".color(self.text_colors.info),
-                    author_name.to_string().color(self.text_colors.info),
+                    author.to_string().color(self.text_colors.info),
                     author_nbr_commits.to_string().color(self.text_colors.info),
                     width = pad
                 ));

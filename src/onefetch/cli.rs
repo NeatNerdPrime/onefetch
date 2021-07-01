@@ -9,6 +9,7 @@ use {
     },
     clap::{crate_description, crate_name, crate_version, App, AppSettings, Arg},
     image::DynamicImage,
+    regex::Regex,
     std::{convert::From, env, str::FromStr},
     strum::IntoEnumIterator,
     term_size,
@@ -30,6 +31,7 @@ pub struct Cli {
     pub no_color_palette: bool,
     pub number_of_authors: usize,
     pub excluded: Vec<String>,
+    pub bot_regex_pattern: Option<Regex>,
     pub print_languages: bool,
     pub print_package_managers: bool,
     pub output: Option<SerializationFormat>,
@@ -37,6 +39,7 @@ pub struct Cli {
     pub art_off: bool,
     pub text_colors: Vec<String>,
     pub iso_time: bool,
+    pub show_email: bool,
 }
 
 impl Cli {
@@ -145,14 +148,13 @@ impl Cli {
                 It is possible to pass a generated STRING by command substitution. \n\
                 For example:\n \
                 '--ascii-input \"$(fortune | cowsay -W 25)\"'")
-            .validator(
-                |t| {
-                    if t.is_empty() {
-                        return Err(String::from("must not be empty"));
-                    }
+            .validator(|t| {
+                if t.is_empty() {
+                    Err(String::from("must not be empty"))
+                } else {
                     Ok(())
-                },
-            ),
+                }
+            }),
         )
         .arg(
             Arg::with_name("true-color")
@@ -199,14 +201,29 @@ impl Cli {
             .help("Turns off bold formatting."),
         )
         .arg(
-            Arg::with_name("no-color-palette")
-            .long("no-color-palette")
+            Arg::with_name("no-palette")
+            .long("no-palette")
             .help("Hides the color palette."),
         )
         .arg(
-            Arg::with_name("no-merge-commits")
-            .long("no-merge-commits")
+            Arg::with_name("no-merges")
+            .long("no-merges")
             .help("Ignores merge commits."),
+        )
+        .arg(
+            Arg::with_name("no-bots")
+            .long("no-bots")
+            .min_values(0)
+            .max_values(1)
+            .value_name("REGEX")
+            .help("Exclude [bot] commits. Use <REGEX> to override the default pattern.")
+            .validator(|p| {
+                if Regex::from_str(&p).is_err() {
+                    Err(String::from("must be a valid regex pattern"))
+                } else {
+                    Ok(())
+                }
+            }),
         )
         .arg(
             Arg::with_name("isotime")
@@ -236,14 +253,19 @@ impl Cli {
             .takes_value(true)
             .default_value("3")
             .help("NUM of authors to be shown.")
-            .validator(
-                |t| {
-                    t.parse::<u32>()
-                        .map_err(|_t| "must be a number")
-                        .map(|_t|())
-                        .map_err(|e| e.to_string())
-                })
+            .validator(|t| {
+                t.parse::<u32>()
+                    .map_err(|_t| "must be a number")
+                    .map(|_t|())
+                    .map_err(|e| e.to_string())
+            })
         )
+		.arg(
+			Arg::with_name("show-email")
+			.short("E")
+			.long("show-email")
+			.help("show the email address of each author.")
+		)
         .arg(
             Arg::with_name("exclude")
             .short("e")
@@ -262,11 +284,12 @@ impl Cli {
             _ => unreachable!(),
         };
         let no_bold = matches.is_present("no-bold");
-        let no_merges = matches.is_present("no-merge-commits");
-        let no_color_palette = matches.is_present("no-color-palette");
+        let no_merges = matches.is_present("no-merges");
+        let no_color_palette = matches.is_present("no-palette");
         let print_languages = matches.is_present("languages");
         let print_package_managers = matches.is_present("package-managers");
         let iso_time = matches.is_present("isotime");
+        let show_email = matches.is_present("show-email");
 
         let output =
             matches.value_of("output").map(SerializationFormat::from_str).transpose().unwrap();
@@ -323,11 +346,9 @@ impl Cli {
 
         let ascii_input = matches.value_of("ascii-input").map(String::from);
 
-        let ascii_language = if let Some(ascii_language) = matches.value_of("ascii-language") {
-            Some(Language::from_str(&ascii_language.to_lowercase()).unwrap())
-        } else {
-            None
-        };
+        let ascii_language = matches
+            .value_of("ascii-language")
+            .map(|ascii_language| Language::from_str(&ascii_language.to_lowercase()).unwrap());
 
         let ascii_colors = if let Some(values) = matches.values_of("ascii-colors") {
             values.map(String::from).collect()
@@ -349,6 +370,11 @@ impl Cli {
             Vec::new()
         };
 
+        let bot_regex_pattern = matches.is_present("no-bots").then(|| {
+            matches
+                .value_of("no-bots")
+                .map_or(Regex::from_str(r"\[bot\]").unwrap(), |s| Regex::from_str(s).unwrap())
+        });
         Ok(Cli {
             repo_path,
             ascii_input,
@@ -363,13 +389,15 @@ impl Cli {
             no_color_palette,
             number_of_authors,
             excluded,
+            bot_regex_pattern,
             print_languages,
             print_package_managers,
             output,
             true_color,
-            text_colors,
             art_off,
+            text_colors,
             iso_time,
+            show_email,
         })
     }
 }
